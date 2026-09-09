@@ -1,0 +1,29 @@
+:root {
+  --sand: #f5efe4;
+  --ink: #2b2320;
+  --teak: #7a5c3e;
+  --lagoon: #1f6f6b;
+  --lagoon-deep: #144e4b;
+  --coral: #d76a4f;
+  --paper: #fffdf8;
+  --line: #e2d6c1;
+  --good: #1f6f6b;
+  --warn: #c47a2c;
+  --over: #b3402f;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--sand);
+  color: var(--ink);
+  font-family: 'Segoe UI', 'Heebo', system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input, select {
+  font-family: inherit;
+}
