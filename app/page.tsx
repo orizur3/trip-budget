@@ -370,7 +370,7 @@ function Stat({ label, value, color }: { label: string; value: string; color?: s
 
 function Input({
   value, onChange, ...rest
-}: { value: string; onChange: (v: string) => void } & React.InputHTMLAttributes<HTMLInputElement>) {
+}: { value: string; onChange: (v: string) => void } & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'onChange'>) {
   return (
     <input
       {...rest}
