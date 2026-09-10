@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { supabase, Expense } from '@/lib/supabase';
+import { supabase, Expense, Currency } from '@/lib/supabase';
 
 const TARGET_BUDGET = 40000;
 const CAP_BUDGET = 50000;
@@ -16,6 +16,15 @@ const BASELINE_TOTAL = BASELINE.reduce((s, b) => s + b.amount, 0);
 
 const CATEGORIES = ['תחבורה', 'אוכל', 'מלון', 'פעילות', 'קניות', 'אחר'];
 
+const CURRENCIES: { code: Currency; label: string; sym: string }[] = [
+  { code: 'THB', label: '฿ באט', sym: '฿' },
+  { code: 'USD', label: '$ דולר', sym: '$' },
+  { code: 'ILS', label: '₪ שקל', sym: '₪' },
+];
+const SYM: Record<Currency, string> = { ILS: '₪', THB: '฿', USD: '$' };
+
+type Rates = Record<string, number>; // ILS per 1 unit of currency
+
 function fmt(n: number) {
   return new Intl.NumberFormat('he-IL', { maximumFractionDigits: 0 }).format(Math.round(n));
 }
@@ -26,17 +35,17 @@ function fmtPrecise(n: number) {
 type FormState = {
   desc: string;
   amount: string;
+  currency: Currency;
   date: string;
   category: string;
-  who: string;
 };
 
 const emptyForm = (): FormState => ({
   desc: '',
   amount: '',
+  currency: 'THB',
   date: new Date().toISOString().slice(0, 10),
   category: 'תחבורה',
-  who: '',
 });
 
 export default function Home() {
@@ -46,6 +55,9 @@ export default function Home() {
   const [form, setForm] = useState<FormState>(emptyForm());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showBaseline, setShowBaseline] = useState(false);
+  const [rates, setRates] = useState<Rates | null>(null);
+  const [ratesUpdated, setRatesUpdated] = useState<string | null>(null);
+  const [ratesStale, setRatesStale] = useState(false);
 
   // Initial load
   useEffect(() => {
@@ -67,6 +79,40 @@ export default function Home() {
     }
 
     load();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Daily exchange rates (THB/USD -> ILS)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRates() {
+      try {
+        const res = await fetch('/api/rates');
+        const data = await res.json();
+        if (cancelled) return;
+        if (!data.rates) throw new Error('no rates');
+        setRates(data.rates);
+        setRatesUpdated(data.updated ?? null);
+        setRatesStale(false);
+        try {
+          localStorage.setItem('fx', JSON.stringify({ rates: data.rates, updated: data.updated ?? null }));
+        } catch { /* ignore */ }
+      } catch {
+        if (cancelled) return;
+        try {
+          const cached = localStorage.getItem('fx');
+          if (cached) {
+            const data = JSON.parse(cached);
+            setRates(data.rates);
+            setRatesUpdated(data.updated ?? null);
+            setRatesStale(true);
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    loadRates();
     return () => { cancelled = true; };
   }, []);
 
@@ -103,14 +149,27 @@ export default function Home() {
   const pct = Math.min(100, (totalSpent / TARGET_BUDGET) * 100);
   const barState = totalSpent > CAP_BUDGET ? 'over' : totalSpent > TARGET_BUDGET ? 'warn' : 'ok';
 
+  // Rate for the currency currently selected in the form
+  const editing = editingId ? expenses.find((e) => e.id === editingId) : undefined;
+  const formRate =
+    form.currency === 'ILS'
+      ? 1
+      : editing && editing.currency === form.currency
+        ? Number(editing.rate)
+        : rates?.[form.currency];
+
+  const amountNumRaw = parseFloat(form.amount);
+  const previewIls =
+    !isNaN(amountNumRaw) && amountNumRaw > 0 && formRate ? amountNumRaw * formRate : null;
+
   function startEdit(exp: Expense) {
     setEditingId(exp.id);
     setForm({
       desc: exp.desc,
-      amount: String(exp.amount),
+      amount: String(exp.original_amount ?? exp.amount),
+      currency: exp.currency ?? 'ILS',
       date: exp.date,
       category: exp.category,
-      who: exp.who || '',
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -122,23 +181,35 @@ export default function Home() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const amountNum = parseFloat(form.amount);
-    if (!form.desc.trim() || isNaN(amountNum) || amountNum <= 0 || !form.date) return;
+    const originalAmount = parseFloat(form.amount);
+    if (!form.desc.trim() || isNaN(originalAmount) || originalAmount <= 0 || !form.date) return;
+
+    const rate =
+      form.currency === 'ILS'
+        ? 1
+        : editing && editing.currency === form.currency
+          ? Number(editing.rate)
+          : rates?.[form.currency];
+
+    if (!rate || rate <= 0) {
+      setError('שער החליפין עדיין לא נטען. נסו שוב עוד רגע.');
+      return;
+    }
 
     setError(null);
 
-    if (editingId) {
-      const { error } = await supabase
-        .from('expenses')
-        .update({
-          desc: form.desc.trim(),
-          amount: amountNum,
-          date: form.date,
-          category: form.category,
-          who: form.who.trim() || null,
-        })
-        .eq('id', editingId);
+    const row = {
+      desc: form.desc.trim(),
+      amount: Number((originalAmount * rate).toFixed(2)),
+      original_amount: originalAmount,
+      currency: form.currency,
+      rate: Number(rate.toFixed(6)),
+      date: form.date,
+      category: form.category,
+    };
 
+    if (editingId) {
+      const { error } = await supabase.from('expenses').update(row).eq('id', editingId);
       if (error) {
         setError('שמירת השינויים נכשלה. נסה שוב.');
         return;
@@ -147,14 +218,7 @@ export default function Home() {
       return;
     }
 
-    const { error } = await supabase.from('expenses').insert({
-      desc: form.desc.trim(),
-      amount: amountNum,
-      date: form.date,
-      category: form.category,
-      who: form.who.trim() || null,
-    });
-
+    const { error } = await supabase.from('expenses').insert(row);
     if (error) {
       setError('הוספת ההוצאה נכשלה. נסה שוב.');
       return;
@@ -266,30 +330,52 @@ export default function Home() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <Input
               type="number"
-              placeholder="סכום בשקלים"
+              inputMode="decimal"
+              placeholder="סכום"
               value={form.amount}
               onChange={(v) => setForm((f) => ({ ...f, amount: v }))}
               min={0}
               step="0.01"
               required
             />
+            <select
+              value={form.currency}
+              onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value as Currency }))}
+              style={selectStyle}
+              aria-label="מטבע"
+            >
+              {CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
+            </select>
+          </div>
+
+          <div style={{ fontSize: 11.5, color: 'var(--teak)', minHeight: 16, lineHeight: 1.5 }}>
+            {form.currency === 'ILS' ? (
+              'סכום בשקלים — נשמר כמו שהוא'
+            ) : formRate ? (
+              <>
+                1 {SYM[form.currency]} ≈ {fmtPrecise(formRate)} ₪
+                {previewIls != null && (
+                  <> · ≈ <strong style={{ color: 'var(--lagoon-deep)' }}>{fmtPrecise(previewIls)} ₪</strong></>
+                )}
+                {ratesStale && ' · שער שמור (אין חיבור)'}
+              </>
+            ) : (
+              'טוען שער חליפין…'
+            )}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <Input
               type="date"
               value={form.date}
               onChange={(v) => setForm((f) => ({ ...f, date: v }))}
               required
             />
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <Input
-              placeholder="מי הוציא? (שם, לא חובה)"
-              value={form.who}
-              onChange={(v) => setForm((f) => ({ ...f, who: v }))}
-            />
             <select
               value={form.category}
               onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
               style={selectStyle}
+              aria-label="קטגוריה"
             >
               {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
@@ -309,7 +395,10 @@ export default function Home() {
         <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 4 }}>
           הוצאות שוטפות {expenses.length > 0 && <span style={{ fontSize: 12, color: 'var(--teak)', fontWeight: 400 }}>({expenses.length})</span>}
         </div>
-        <p style={{ fontSize: 11.5, color: 'var(--teak)', margin: '0 0 10px' }}>לחצו על ✎ כדי לערוך הוצאה קיימת</p>
+        <p style={{ fontSize: 11.5, color: 'var(--teak)', margin: '0 0 10px' }}>
+          לחצו על ✎ כדי לערוך הוצאה קיימת
+          {ratesUpdated && <> · שער חליפין עודכן: {new Date(ratesUpdated).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}</>}
+        </p>
 
         {loading ? (
           <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '20px 0' }}>טוען...</div>
@@ -319,31 +408,35 @@ export default function Home() {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {expenses.map((e) => (
-              <div key={e.id} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '10px 4px', borderBottom: '1px solid var(--line)',
-              }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{e.desc}</div>
-                  <div style={{ fontSize: 11.5, color: 'var(--teak)' }}>
-                    <span style={{
-                      display: 'inline-block', fontSize: 10.5, padding: '1px 7px', borderRadius: 20,
-                      background: '#e7ede2', color: 'var(--lagoon-deep)', marginLeft: 6,
-                    }}>
-                      {e.category}
-                    </span>
-                    {new Date(e.date).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}
-                    {e.who ? ` · ${e.who}` : ''}
+            {expenses.map((e) => {
+              const cur = (e.currency ?? 'ILS') as Currency;
+              const orig = Number(e.original_amount ?? e.amount);
+              return (
+                <div key={e.id} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '10px 4px', borderBottom: '1px solid var(--line)',
+                }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>{e.desc}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--teak)' }}>
+                      <span style={{
+                        display: 'inline-block', fontSize: 10.5, padding: '1px 7px', borderRadius: 20,
+                        background: '#e7ede2', color: 'var(--lagoon-deep)', marginLeft: 6,
+                      }}>
+                        {e.category}
+                      </span>
+                      {new Date(e.date).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}
+                      {cur !== 'ILS' && ` · ${fmtPrecise(orig)} ${SYM[cur]}`}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: 'nowrap' }}>{fmtPrecise(Number(e.amount))} ₪</div>
+                    <button onClick={() => startEdit(e)} aria-label="ערוך" style={editBtnStyle}>✎</button>
+                    <button onClick={() => handleDelete(e.id)} aria-label="מחק" style={delBtnStyle}>✕</button>
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: 'nowrap' }}>{fmtPrecise(Number(e.amount))} ₪</div>
-                  <button onClick={() => startEdit(e)} aria-label="ערוך" style={editBtnStyle}>✎</button>
-                  <button onClick={() => handleDelete(e.id)} aria-label="מחק" style={delBtnStyle}>✕</button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>

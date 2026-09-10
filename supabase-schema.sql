@@ -3,10 +3,12 @@
 create table if not exists expenses (
   id uuid primary key default gen_random_uuid(),
   "desc" text not null,
-  amount numeric not null check (amount > 0),
+  amount numeric not null check (amount > 0),          -- always ILS (converted at entry time)
+  original_amount numeric not null check (original_amount > 0), -- amount as entered, in `currency`
+  currency text not null default 'ILS',                -- 'ILS' | 'THB' | 'USD'
+  rate numeric not null default 1 check (rate > 0),    -- ILS per 1 unit of `currency` at entry time
   date date not null,
   category text not null default 'אחר',
-  who text,
   created_at timestamptz not null default now()
 );
 
