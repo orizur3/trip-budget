@@ -469,16 +469,21 @@ export default function Home() {
         </div>
       </Card>
 
-      {/* Day-by-day pacing */}
+      {/* Day-by-day breakdown — the one place expenses are listed and edited */}
       <Card>
-        <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>פירוט לפי יום</div>
+        <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>
+          פירוט לפי יום {expenses.length > 0 && <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 400 }}>({expenses.length})</span>}
+        </div>
         <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '0 0 10px' }}>
-          כל יום מול היעד הממוצע הנוכחי ({fmt(avgPerDayRemaining)} ₪/יום) · הוצאה מתמשכת מחולקת שווה בשווה
+          כל יום מול היעד הממוצע הנוכחי ({fmt(avgPerDayRemaining)} ₪/יום) · הקישו על הוצאה כדי לערוך
+          {ratesUpdated && <> · שער חליפין עודכן: {new Date(ratesUpdated).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}</>}
         </p>
 
-        {daySpread.length === 0 ? (
-          <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 13, padding: '10px 0' }}>
-            עדיין אין הוצאות שוטפות לפי יום.
+        {loading ? (
+          <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 13, padding: '20px 0' }}>טוען...</div>
+        ) : daySpread.length === 0 ? (
+          <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 13, padding: '20px 0' }}>
+            עדיין לא נוספו הוצאות שוטפות.<br />הראשונה תופיע כאן.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -503,19 +508,26 @@ export default function Home() {
                       {overPace ? `+${fmt(diff)} ₪ מעל היעד היומי` : `${fmt(diff)} ₪ מתחת ליעד היומי`}
                     </span>
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     {day.entries.map(({ expense: e, share, spanDays }) => {
                       const cur = (e.currency ?? 'ILS') as Currency;
                       const orig = Number(e.original_amount ?? e.amount);
                       return (
-                        <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
-                          <span>
+                        <div
+                          key={e.id}
+                          onClick={() => startEdit(e)}
+                          style={{
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6,
+                            fontSize: 12.5, cursor: 'pointer', padding: '3px 4px', borderRadius: 8,
+                          }}
+                        >
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {metaFor(e.category).emoji} {e.desc}
                             {spanDays > 1 && (
                               <span style={{ color: 'var(--muted)' }}> · {dateRangeLabel(e)}</span>
                             )}
                           </span>
-                          <span style={{ whiteSpace: 'nowrap' }}>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0 }}>
                             {spanDays > 1 ? (
                               `${fmtPrecise(share)} ₪/יום`
                             ) : (
@@ -526,76 +538,17 @@ export default function Home() {
                                 {fmtPrecise(Number(e.amount))} ₪
                               </>
                             )}
+                            <button
+                              onClick={(ev) => { ev.stopPropagation(); handleDelete(e.id); }}
+                              aria-label="מחק"
+                              style={delBtnStyle}
+                            >
+                              ✕
+                            </button>
                           </span>
                         </div>
                       );
                     })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
-
-      {/* Recent expenses */}
-      <Card>
-        <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>
-          הוצאות שוטפות {expenses.length > 0 && <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 400 }}>({expenses.length})</span>}
-        </div>
-        <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '0 0 10px' }}>
-          הקישו על כרטיס כדי לערוך
-          {ratesUpdated && <> · שער חליפין עודכן: {new Date(ratesUpdated).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}</>}
-        </p>
-
-        {loading ? (
-          <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 13, padding: '20px 0' }}>טוען...</div>
-        ) : expenses.length === 0 ? (
-          <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 13, padding: '20px 0' }}>
-            עדיין לא נוספו הוצאות שוטפות.<br />הראשונה תופיע כאן.
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {expenses.map((e) => {
-              const cur = (e.currency ?? 'ILS') as Currency;
-              const orig = Number(e.original_amount ?? e.amount);
-              const spanDays = daysBetweenInclusive(e.date, expenseEndDate(e));
-              const meta = metaFor(e.category);
-              return (
-                <div
-                  key={e.id}
-                  onClick={() => startEdit(e)}
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-                    padding: '10px 12px', borderRadius: 14, background: 'var(--bg)', border: '1px solid var(--line)',
-                    cursor: 'pointer', animation: 'fadeInUp 0.3s ease',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                    <div style={{
-                      fontSize: 20, width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
-                      background: `${meta.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}>
-                      {meta.emoji}
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.desc}</div>
-                      <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-                        {dateRangeLabel(e)}
-                        {cur !== 'ILS' && ` · ${fmtPrecise(orig)} ${SYM[cur]}`}
-                        {spanDays > 1 && ` · ${spanDays} ימים`}
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                    <div style={{ fontSize: 15, fontWeight: 800, whiteSpace: 'nowrap' }}>{fmtPrecise(Number(e.amount))} ₪</div>
-                    <button
-                      onClick={(ev) => { ev.stopPropagation(); handleDelete(e.id); }}
-                      aria-label="מחק"
-                      style={delBtnStyle}
-                    >
-                      ✕
-                    </button>
                   </div>
                 </div>
               );
