@@ -574,40 +574,66 @@ export default function Home() {
                 )}
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <Input
-                  type="date"
-                  value={form.date}
-                  onChange={(v) => setForm((f) => ({ ...f, date: v, endDate: f.spread ? f.endDate : v }))}
-                  required
-                />
-                <select
-                  value={form.category}
-                  onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-                  style={selectStyle}
-                  aria-label="קטגוריה"
-                >
-                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--teak)', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={form.spread}
                   onChange={(e) => setForm((f) => ({ ...f, spread: e.target.checked, endDate: e.target.checked ? f.endDate : f.date }))}
                 />
-                הוצאה מתמשכת על כמה ימים (רכב שכור, מלון...) — תתחלק שווה בשווה
+                הוצאה מתמשכת על כמה ימים (רכב שכור, מלון...) — תתחלק שווה בשווה בין הימים
               </label>
 
-              {form.spread && (
-                <Input
-                  type="date"
-                  value={form.endDate}
-                  onChange={(v) => setForm((f) => ({ ...f, endDate: v }))}
-                  min={form.date}
-                  required
-                />
+              {form.spread ? (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <Field label="מתאריך">
+                      <Input
+                        type="date"
+                        value={form.date}
+                        onChange={(v) => setForm((f) => ({ ...f, date: v }))}
+                        required
+                      />
+                    </Field>
+                    <Field label="עד תאריך (כולל)">
+                      <Input
+                        type="date"
+                        value={form.endDate}
+                        onChange={(v) => setForm((f) => ({ ...f, endDate: v }))}
+                        min={form.date}
+                        required
+                      />
+                    </Field>
+                  </div>
+                  <Field label="קטגוריה">
+                    <select
+                      value={form.category}
+                      onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
+                      style={selectStyle}
+                    >
+                      {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </Field>
+                </>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <Field label="תאריך">
+                    <Input
+                      type="date"
+                      value={form.date}
+                      onChange={(v) => setForm((f) => ({ ...f, date: v }))}
+                      required
+                    />
+                  </Field>
+                  <Field label="קטגוריה">
+                    <select
+                      value={form.category}
+                      onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
+                      style={selectStyle}
+                    >
+                      {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </Field>
+                </div>
               )}
 
               <div style={{ display: 'flex', gap: 8 }}>
@@ -746,6 +772,15 @@ function Stat({ label, value, color, full }: { label: string; value: string; col
     <div style={{ padding: 12, borderRadius: 10, background: '#f9f4ea', gridColumn: full ? '1 / -1' : undefined }}>
       <div style={{ fontSize: 11, color: 'var(--teak)', marginBottom: 3 }}>{label}</div>
       <div style={{ fontSize: 19, fontWeight: 700, color: color || 'var(--ink)' }}>{value}</div>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span style={{ fontSize: 11, color: 'var(--teak)' }}>{label}</span>
+      {children}
     </div>
   );
 }
