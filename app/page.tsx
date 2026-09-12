@@ -19,6 +19,19 @@ const BASELINE_TOTAL = BASELINE.reduce((s, b) => s + b.amount, 0);
 
 const CATEGORIES = ['תחבורה', 'אוכל', 'מלון', 'פעילות', 'קניות', 'אחר'];
 
+const CATEGORY_COLORS: Record<string, string> = {
+  'תחבורה': '#1f6f6b',
+  'אוכל': '#d76a4f',
+  'מלון': '#4f7cac',
+  'פעילות': '#8a5fbf',
+  'קניות': '#c9a227',
+  'אחר': '#7a5c3e',
+};
+const FALLBACK_COLOR = '#9a9a9a';
+function colorFor(cat: string) {
+  return CATEGORY_COLORS[cat] ?? FALLBACK_COLOR;
+}
+
 const CURRENCIES: { code: Currency; label: string; sym: string }[] = [
   { code: 'THB', label: '฿ באט', sym: '฿' },
   { code: 'USD', label: '$ דולר', sym: '$' },
@@ -46,22 +59,65 @@ function daysBetweenInclusive(a: string, b: string) {
 function dayLabel(date: string) {
   return new Date(`${date}T00:00:00`).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric', weekday: 'short' });
 }
+function shortDate(date: string) {
+  return new Date(`${date}T00:00:00`).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' });
+}
+// Format a Date back to 'YYYY-MM-DD' using its LOCAL calendar date (never toISOString, which
+// converts to UTC and shifts the date near midnight in any timezone ahead of UTC).
+function toDateStr(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function todayLocal() {
+  return toDateStr(new Date());
+}
+// Last day an expense applies to (falls back to its start date for a normal, single-day expense).
+function expenseEndDate(e: Pick<Expense, 'date' | 'end_date'>) {
+  return e.end_date && e.end_date > e.date ? e.end_date : e.date;
+}
+function dateRangeLabel(e: Pick<Expense, 'date' | 'end_date'>) {
+  const end = expenseEndDate(e);
+  return end !== e.date ? `${shortDate(e.date)}–${shortDate(end)}` : shortDate(e.date);
+}
+// Every calendar day from start to end, inclusive (capped so a typo can't loop forever).
+function daysInRange(start: string, end: string): string[] {
+  const days: string[] = [];
+  let cur = new Date(`${start}T00:00:00`);
+  const endD = new Date(`${end}T00:00:00`);
+  if (endD < cur) return [start];
+  let guard = 0;
+  while (cur <= endD && guard < 180) {
+    days.push(toDateStr(cur));
+    cur = new Date(cur.getTime() + 86400000);
+    guard++;
+  }
+  return days;
+}
 
 type FormState = {
   desc: string;
   amount: string;
   currency: Currency;
   date: string;
+  spread: boolean;
+  endDate: string;
   category: string;
 };
 
-const emptyForm = (): FormState => ({
-  desc: '',
-  amount: '',
-  currency: 'THB',
-  date: new Date().toISOString().slice(0, 10),
-  category: 'תחבורה',
-});
+const emptyForm = (): FormState => {
+  const today = todayLocal();
+  return {
+    desc: '',
+    amount: '',
+    currency: 'THB',
+    date: today,
+    spread: false,
+    endDate: today,
+    category: 'תחבורה',
+  };
+};
 
 export default function Home() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -73,6 +129,7 @@ export default function Home() {
   const [rates, setRates] = useState<Rates | null>(null);
   const [ratesUpdated, setRatesUpdated] = useState<string | null>(null);
   const [ratesStale, setRatesStale] = useState(false);
+  const [tab, setTab] = useState<'track' | 'categories'>('track');
 
   // Initial load
   useEffect(() => {
@@ -165,31 +222,48 @@ export default function Home() {
   const barState = totalSpent > CAP_BUDGET ? 'over' : totalSpent > TARGET_BUDGET ? 'warn' : 'ok';
 
   // Daily pace: split what's left of the target budget across the days remaining in the trip.
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = todayLocal();
   const clampedToday = todayStr < TRIP_START ? TRIP_START : todayStr > TRIP_END ? TRIP_END : todayStr;
   const totalTripDays = daysBetweenInclusive(TRIP_START, TRIP_END);
   const daysRemaining = Math.max(1, daysBetweenInclusive(clampedToday, TRIP_END));
   const avgPerDayRemaining = remaining / daysRemaining;
 
-  // Group running expenses by day, chronological (trip order), each day's items in entry order.
-  const dayGroups = useMemo(() => {
-    const map = new Map<string, Expense[]>();
+  // Spread every expense evenly across the days it covers (a normal expense covers just its own
+  // day; a multi-day one like a car rental or hotel covers date..end_date), grouped by day,
+  // chronological (trip order), each day's items kept in the order they were entered.
+  const daySpread = useMemo(() => {
+    const map = new Map<string, { date: string; total: number; entries: { expense: Expense; share: number; spanDays: number }[]; byCategory: Record<string, number> }>();
     for (const e of expenses) {
-      const arr = map.get(e.date) ?? [];
-      arr.push(e);
-      map.set(e.date, arr);
+      const days = daysInRange(e.date, expenseEndDate(e));
+      const share = Number(e.amount) / days.length;
+      days.forEach((d) => {
+        let bucket = map.get(d);
+        if (!bucket) {
+          bucket = { date: d, total: 0, entries: [], byCategory: {} };
+          map.set(d, bucket);
+        }
+        bucket.total += share;
+        bucket.entries.push({ expense: e, share, spanDays: days.length });
+        bucket.byCategory[e.category] = (bucket.byCategory[e.category] ?? 0) + share;
+      });
     }
-    Array.from(map.values()).forEach((arr) => {
-      arr.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+    Array.from(map.values()).forEach((bucket) => {
+      bucket.entries.sort((a, b) => (a.expense.created_at < b.expense.created_at ? -1 : a.expense.created_at > b.expense.created_at ? 1 : 0));
     });
-    return Array.from(map.entries())
-      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-      .map(([date, items]) => ({
-        date,
-        items,
-        total: items.reduce((s, e) => s + Number(e.amount), 0),
-      }));
+    return Array.from(map.values()).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   }, [expenses]);
+
+  // Overall category totals (each expense counts once, in full, under its category).
+  const categoryTotals = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const e of expenses) {
+      map.set(e.category, (map.get(e.category) ?? 0) + Number(e.amount));
+    }
+    return Array.from(map.entries())
+      .map(([category, amount]) => ({ category, amount }))
+      .sort((a, b) => b.amount - a.amount);
+  }, [expenses]);
+  const categoryGrandTotal = categoryTotals.reduce((s, c) => s + c.amount, 0);
 
   // Rate for the currency currently selected in the form
   const editing = editingId ? expenses.find((e) => e.id === editingId) : undefined;
@@ -206,11 +280,14 @@ export default function Home() {
 
   function startEdit(exp: Expense) {
     setEditingId(exp.id);
+    const end = expenseEndDate(exp);
     setForm({
       desc: exp.desc,
       amount: String(exp.original_amount ?? exp.amount),
       currency: exp.currency ?? 'ILS',
       date: exp.date,
+      spread: end !== exp.date,
+      endDate: end,
       category: exp.category,
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -225,6 +302,12 @@ export default function Home() {
     e.preventDefault();
     const originalAmount = parseFloat(form.amount);
     if (!form.desc.trim() || isNaN(originalAmount) || originalAmount <= 0 || !form.date) return;
+
+    const endDateValue = form.spread ? form.endDate : form.date;
+    if (form.spread && endDateValue < form.date) {
+      setError('תאריך הסיום חייב להיות אחרי תאריך ההתחלה.');
+      return;
+    }
 
     const rate =
       form.currency === 'ILS'
@@ -247,6 +330,7 @@ export default function Home() {
       currency: form.currency,
       rate: Number(rate.toFixed(6)),
       date: form.date,
+      end_date: endDateValue > form.date ? endDateValue : null,
       category: form.category,
     };
 
@@ -364,192 +448,287 @@ export default function Home() {
         )}
       </Card>
 
-      <Card>
-        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 4 }}>
-          פירוט לפי יום
-        </div>
-        <p style={{ fontSize: 11.5, color: 'var(--teak)', margin: '0 0 10px' }}>
-          כל יום מול היעד הממוצע הנוכחי ({fmt(avgPerDayRemaining)} ₪/יום)
-        </p>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: '#f0e9da', padding: 4, borderRadius: 10 }}>
+        <TabButton active={tab === 'track'} onClick={() => setTab('track')}>מעקב יומי</TabButton>
+        <TabButton active={tab === 'categories'} onClick={() => setTab('categories')}>קטגוריות</TabButton>
+      </div>
 
-        {dayGroups.length === 0 ? (
-          <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '10px 0' }}>
-            עדיין אין הוצאות שוטפות לפי יום.
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {dayGroups.map((g) => {
-              const dayNum = daysBetweenInclusive(TRIP_START, g.date);
-              const overPace = g.total > avgPerDayRemaining;
-              const diff = Math.abs(g.total - avgPerDayRemaining);
-              return (
-                <div key={g.date} style={{ borderRadius: 10, background: '#f9f4ea', padding: '10px 12px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--lagoon-deep)' }}>
-                      יום {dayNum} · {dayLabel(g.date)}
-                    </div>
-                    <div style={{ fontSize: 14, fontWeight: 700 }}>{fmt(g.total)} ₪</div>
-                  </div>
-                  <div style={{ fontSize: 10.5, marginBottom: 6 }}>
-                    <span style={{
-                      display: 'inline-block', padding: '1px 7px', borderRadius: 20,
-                      background: overPace ? '#fbe9e4' : '#e7ede2',
-                      color: overPace ? 'var(--over)' : 'var(--lagoon-deep)',
-                    }}>
-                      {overPace ? `+${fmt(diff)} ₪ מעל היעד היומי` : `${fmt(diff)} ₪ מתחת ליעד היומי`}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {g.items.map((e) => {
-                      const cur = (e.currency ?? 'ILS') as Currency;
-                      const orig = Number(e.original_amount ?? e.amount);
-                      return (
-                        <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
-                          <span>
-                            {e.desc}
-                            <span style={{ color: 'var(--teak)' }}> · {e.category}</span>
-                          </span>
-                          <span style={{ whiteSpace: 'nowrap' }}>
-                            {cur !== 'ILS' && (
-                              <span style={{ color: 'var(--teak)' }}>{fmtPrecise(orig)} {SYM[cur]} · </span>
-                            )}
-                            {fmtPrecise(Number(e.amount))} ₪
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
+      {tab === 'track' && (
+        <>
+          <Card>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 4 }}>
+              פירוט לפי יום
+            </div>
+            <p style={{ fontSize: 11.5, color: 'var(--teak)', margin: '0 0 10px' }}>
+              כל יום מול היעד הממוצע הנוכחי ({fmt(avgPerDayRemaining)} ₪/יום) · הוצאה מתמשכת מחולקת שווה בשווה
+            </p>
 
-      <Card>
-        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 10 }}>
-          {editingId ? 'עריכת הוצאה' : 'הוסף הוצאה'}
-        </div>
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <Input
-            placeholder="תיאור ההוצאה (למשל: מונית, ארוחת ערב)"
-            value={form.desc}
-            onChange={(v) => setForm((f) => ({ ...f, desc: v }))}
-            required
-          />
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <Input
-              type="number"
-              inputMode="decimal"
-              placeholder="סכום"
-              value={form.amount}
-              onChange={(v) => setForm((f) => ({ ...f, amount: v }))}
-              min={0}
-              step="0.01"
-              required
-            />
-            <select
-              value={form.currency}
-              onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value as Currency }))}
-              style={selectStyle}
-              aria-label="מטבע"
-            >
-              {CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
-            </select>
-          </div>
-
-          <div style={{ fontSize: 11.5, color: 'var(--teak)', minHeight: 16, lineHeight: 1.5 }}>
-            {form.currency === 'ILS' ? (
-              'סכום בשקלים — נשמר כמו שהוא'
-            ) : formRate ? (
-              <>
-                1 {SYM[form.currency]} ≈ {fmtPrecise(formRate)} ₪
-                {previewIls != null && (
-                  <> · ≈ <strong style={{ color: 'var(--lagoon-deep)' }}>{fmtPrecise(previewIls)} ₪</strong></>
-                )}
-                {ratesStale && ' · שער שמור (אין חיבור)'}
-              </>
+            {daySpread.length === 0 ? (
+              <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '10px 0' }}>
+                עדיין אין הוצאות שוטפות לפי יום.
+              </div>
             ) : (
-              'טוען שער חליפין…'
-            )}
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <Input
-              type="date"
-              value={form.date}
-              onChange={(v) => setForm((f) => ({ ...f, date: v }))}
-              required
-            />
-            <select
-              value={form.category}
-              onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-              style={selectStyle}
-              aria-label="קטגוריה"
-            >
-              {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="submit" style={{ ...btnAddStyle, flex: 1, background: editingId ? 'var(--coral)' : 'var(--lagoon)' }}>
-              {editingId ? 'שמור שינויים' : 'הוסף הוצאה'}
-            </button>
-            {editingId && (
-              <button type="button" onClick={cancelEdit} style={btnCancelStyle}>בטל</button>
-            )}
-          </div>
-        </form>
-      </Card>
-
-      <Card>
-        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 4 }}>
-          הוצאות שוטפות {expenses.length > 0 && <span style={{ fontSize: 12, color: 'var(--teak)', fontWeight: 400 }}>({expenses.length})</span>}
-        </div>
-        <p style={{ fontSize: 11.5, color: 'var(--teak)', margin: '0 0 10px' }}>
-          לחצו על ✎ כדי לערוך הוצאה קיימת
-          {ratesUpdated && <> · שער חליפין עודכן: {new Date(ratesUpdated).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}</>}
-        </p>
-
-        {loading ? (
-          <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '20px 0' }}>טוען...</div>
-        ) : expenses.length === 0 ? (
-          <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '20px 0' }}>
-            עדיין לא נוספו הוצאות שוטפות.<br />הראשונה תופיע כאן.
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {expenses.map((e) => {
-              const cur = (e.currency ?? 'ILS') as Currency;
-              const orig = Number(e.original_amount ?? e.amount);
-              return (
-                <div key={e.id} style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  padding: '10px 4px', borderBottom: '1px solid var(--line)',
-                }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600 }}>{e.desc}</div>
-                    <div style={{ fontSize: 11.5, color: 'var(--teak)' }}>
-                      <span style={{
-                        display: 'inline-block', fontSize: 10.5, padding: '1px 7px', borderRadius: 20,
-                        background: '#e7ede2', color: 'var(--lagoon-deep)', marginLeft: 6,
-                      }}>
-                        {e.category}
-                      </span>
-                      {new Date(e.date).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}
-                      {cur !== 'ILS' && ` · ${fmtPrecise(orig)} ${SYM[cur]}`}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {daySpread.map((day) => {
+                  const dayNum = daysBetweenInclusive(TRIP_START, day.date);
+                  const overPace = day.total > avgPerDayRemaining;
+                  const diff = Math.abs(day.total - avgPerDayRemaining);
+                  return (
+                    <div key={day.date} style={{ borderRadius: 10, background: '#f9f4ea', padding: '10px 12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--lagoon-deep)' }}>
+                          יום {dayNum} · {dayLabel(day.date)}
+                        </div>
+                        <div style={{ fontSize: 14, fontWeight: 700 }}>{fmt(day.total)} ₪</div>
+                      </div>
+                      <div style={{ fontSize: 10.5, marginBottom: 6 }}>
+                        <span style={{
+                          display: 'inline-block', padding: '1px 7px', borderRadius: 20,
+                          background: overPace ? '#fbe9e4' : '#e7ede2',
+                          color: overPace ? 'var(--over)' : 'var(--lagoon-deep)',
+                        }}>
+                          {overPace ? `+${fmt(diff)} ₪ מעל היעד היומי` : `${fmt(diff)} ₪ מתחת ליעד היומי`}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {day.entries.map(({ expense: e, share, spanDays }) => {
+                          const cur = (e.currency ?? 'ILS') as Currency;
+                          const orig = Number(e.original_amount ?? e.amount);
+                          return (
+                            <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
+                              <span>
+                                {e.desc}
+                                <span style={{ color: 'var(--teak)' }}> · {e.category}</span>
+                                {spanDays > 1 && (
+                                  <span style={{ color: 'var(--teak)' }}> · {dateRangeLabel(e)}</span>
+                                )}
+                              </span>
+                              <span style={{ whiteSpace: 'nowrap' }}>
+                                {spanDays > 1 ? (
+                                  `${fmtPrecise(share)} ₪/יום`
+                                ) : (
+                                  <>
+                                    {cur !== 'ILS' && (
+                                      <span style={{ color: 'var(--teak)' }}>{fmtPrecise(orig)} {SYM[cur]} · </span>
+                                    )}
+                                    {fmtPrecise(Number(e.amount))} ₪
+                                  </>
+                                )}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: 'nowrap' }}>{fmtPrecise(Number(e.amount))} ₪</div>
-                    <button onClick={() => startEdit(e)} aria-label="ערוך" style={editBtnStyle}>✎</button>
-                    <button onClick={() => handleDelete(e.id)} aria-label="מחק" style={delBtnStyle}>✕</button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+
+          <Card>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 10 }}>
+              {editingId ? 'עריכת הוצאה' : 'הוסף הוצאה'}
+            </div>
+            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <Input
+                placeholder="תיאור ההוצאה (למשל: מונית, ארוחת ערב)"
+                value={form.desc}
+                onChange={(v) => setForm((f) => ({ ...f, desc: v }))}
+                required
+              />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <Input
+                  type="number"
+                  inputMode="decimal"
+                  placeholder="סכום"
+                  value={form.amount}
+                  onChange={(v) => setForm((f) => ({ ...f, amount: v }))}
+                  min={0}
+                  step="0.01"
+                  required
+                />
+                <select
+                  value={form.currency}
+                  onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value as Currency }))}
+                  style={selectStyle}
+                  aria-label="מטבע"
+                >
+                  {CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
+                </select>
+              </div>
+
+              <div style={{ fontSize: 11.5, color: 'var(--teak)', minHeight: 16, lineHeight: 1.5 }}>
+                {form.currency === 'ILS' ? (
+                  'סכום בשקלים — נשמר כמו שהוא'
+                ) : formRate ? (
+                  <>
+                    1 {SYM[form.currency]} ≈ {fmtPrecise(formRate)} ₪
+                    {previewIls != null && (
+                      <> · ≈ <strong style={{ color: 'var(--lagoon-deep)' }}>{fmtPrecise(previewIls)} ₪</strong></>
+                    )}
+                    {ratesStale && ' · שער שמור (אין חיבור)'}
+                  </>
+                ) : (
+                  'טוען שער חליפין…'
+                )}
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <Input
+                  type="date"
+                  value={form.date}
+                  onChange={(v) => setForm((f) => ({ ...f, date: v, endDate: f.spread ? f.endDate : v }))}
+                  required
+                />
+                <select
+                  value={form.category}
+                  onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
+                  style={selectStyle}
+                  aria-label="קטגוריה"
+                >
+                  {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--teak)', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.spread}
+                  onChange={(e) => setForm((f) => ({ ...f, spread: e.target.checked, endDate: e.target.checked ? f.endDate : f.date }))}
+                />
+                הוצאה מתמשכת על כמה ימים (רכב שכור, מלון...) — תתחלק שווה בשווה
+              </label>
+
+              {form.spread && (
+                <Input
+                  type="date"
+                  value={form.endDate}
+                  onChange={(v) => setForm((f) => ({ ...f, endDate: v }))}
+                  min={form.date}
+                  required
+                />
+              )}
+
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="submit" style={{ ...btnAddStyle, flex: 1, background: editingId ? 'var(--coral)' : 'var(--lagoon)' }}>
+                  {editingId ? 'שמור שינויים' : 'הוסף הוצאה'}
+                </button>
+                {editingId && (
+                  <button type="button" onClick={cancelEdit} style={btnCancelStyle}>בטל</button>
+                )}
+              </div>
+            </form>
+          </Card>
+
+          <Card>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 4 }}>
+              הוצאות שוטפות {expenses.length > 0 && <span style={{ fontSize: 12, color: 'var(--teak)', fontWeight: 400 }}>({expenses.length})</span>}
+            </div>
+            <p style={{ fontSize: 11.5, color: 'var(--teak)', margin: '0 0 10px' }}>
+              לחצו על ✎ כדי לערוך הוצאה קיימת
+              {ratesUpdated && <> · שער חליפין עודכן: {new Date(ratesUpdated).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}</>}
+            </p>
+
+            {loading ? (
+              <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '20px 0' }}>טוען...</div>
+            ) : expenses.length === 0 ? (
+              <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '20px 0' }}>
+                עדיין לא נוספו הוצאות שוטפות.<br />הראשונה תופיע כאן.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {expenses.map((e) => {
+                  const cur = (e.currency ?? 'ILS') as Currency;
+                  const orig = Number(e.original_amount ?? e.amount);
+                  const spanDays = daysBetweenInclusive(e.date, expenseEndDate(e));
+                  return (
+                    <div key={e.id} style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      padding: '10px 4px', borderBottom: '1px solid var(--line)',
+                    }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600 }}>{e.desc}</div>
+                        <div style={{ fontSize: 11.5, color: 'var(--teak)' }}>
+                          <span style={{
+                            display: 'inline-block', fontSize: 10.5, padding: '1px 7px', borderRadius: 20,
+                            background: '#e7ede2', color: 'var(--lagoon-deep)', marginLeft: 6,
+                          }}>
+                            {e.category}
+                          </span>
+                          {dateRangeLabel(e)}
+                          {cur !== 'ILS' && ` · ${fmtPrecise(orig)} ${SYM[cur]}`}
+                          {spanDays > 1 && ` · ${spanDays} ימים`}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: 'nowrap' }}>{fmtPrecise(Number(e.amount))} ₪</div>
+                        <button onClick={() => startEdit(e)} aria-label="ערוך" style={editBtnStyle}>✎</button>
+                        <button onClick={() => handleDelete(e.id)} aria-label="מחק" style={delBtnStyle}>✕</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+
+      {tab === 'categories' && (
+        <>
+          <Card>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 10 }}>
+              פילוח קטגוריות — סה"כ הוצאות שוטפות
+            </div>
+            {categoryTotals.length === 0 ? (
+              <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '20px 0' }}>
+                עדיין אין הוצאות לפילוח.
+              </div>
+            ) : (
+              <>
+                <Donut segments={categoryTotals} total={categoryGrandTotal} />
+                <CategoryLegend segments={categoryTotals} total={categoryGrandTotal} />
+              </>
+            )}
+          </Card>
+
+          <Card>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 4 }}>
+              פילוח קטגוריות לפי יום
+            </div>
+            <p style={{ fontSize: 11.5, color: 'var(--teak)', margin: '0 0 10px' }}>
+              הוצאה מתמשכת (רכב/מלון) מחולקת שווה בשווה על פני הימים שלה
+            </p>
+            {daySpread.length === 0 ? (
+              <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '10px 0' }}>
+                עדיין אין נתונים.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {daySpread.map((day) => {
+                  const dayNum = daysBetweenInclusive(TRIP_START, day.date);
+                  const cats = Object.entries(day.byCategory).sort((a, b) => b[1] - a[1]);
+                  return (
+                    <div key={day.date}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                        <span style={{ fontWeight: 600 }}>יום {dayNum} · {dayLabel(day.date)}</span>
+                        <span>{fmt(day.total)} ₪</span>
+                      </div>
+                      <div style={{ display: 'flex', height: 10, borderRadius: 6, overflow: 'hidden', background: '#eee2cf' }}>
+                        {cats.map(([cat, amt]) => (
+                          <div key={cat} title={`${cat}: ${fmtPrecise(amt)} ₪`} style={{ width: `${(amt / day.total) * 100}%`, background: colorFor(cat) }} />
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+                <CategoryLegend segments={categoryTotals} total={categoryGrandTotal} />
+              </div>
+            )}
+          </Card>
+        </>
+      )}
     </div>
   );
 }
@@ -567,6 +746,65 @@ function Stat({ label, value, color, full }: { label: string; value: string; col
     <div style={{ padding: 12, borderRadius: 10, background: '#f9f4ea', gridColumn: full ? '1 / -1' : undefined }}>
       <div style={{ fontSize: 11, color: 'var(--teak)', marginBottom: 3 }}>{label}</div>
       <div style={{ fontSize: 19, fontWeight: 700, color: color || 'var(--ink)' }}>{value}</div>
+    </div>
+  );
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        flex: 1, padding: '8px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
+        fontSize: 13, fontWeight: 600,
+        background: active ? 'var(--paper)' : 'transparent',
+        color: active ? 'var(--lagoon-deep)' : 'var(--teak)',
+        boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Donut({ segments, total }: { segments: { category: string; amount: number }[]; total: number }) {
+  if (total <= 0) return null;
+  let acc = 0;
+  const stops = segments.map((s) => {
+    const from = (acc / total) * 100;
+    acc += s.amount;
+    const to = (acc / total) * 100;
+    return `${colorFor(s.category)} ${from}% ${to}%`;
+  });
+  return (
+    <div style={{ position: 'relative', width: 168, height: 168, margin: '0 auto' }}>
+      <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: `conic-gradient(${stops.join(', ')})` }} />
+      <div style={{
+        position: 'absolute', inset: 26, borderRadius: '50%', background: 'var(--paper)',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <div style={{ fontSize: 10.5, color: 'var(--teak)' }}>סה&quot;כ</div>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>{fmt(total)} ₪</div>
+      </div>
+    </div>
+  );
+}
+
+function CategoryLegend({ segments, total }: { segments: { category: string; amount: number }[]; total: number }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
+      {segments.map((s) => (
+        <div key={s.category} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 9, height: 9, borderRadius: '50%', background: colorFor(s.category), display: 'inline-block' }} />
+            {s.category}
+          </span>
+          <span>
+            {fmtPrecise(s.amount)} ₪
+            <span style={{ color: 'var(--teak)' }}> · {total > 0 ? Math.round((s.amount / total) * 100) : 0}%</span>
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

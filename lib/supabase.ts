@@ -14,7 +14,8 @@ export type Expense = {
   original_amount: number; // amount as entered, in `currency`
   currency: Currency;
   rate: number;            // ILS per 1 unit of `currency` at entry time
-  date: string;
+  date: string;            // first day this expense applies to
+  end_date: string | null; // last day, for a multi-day expense (car rental, hotel...); null = same as `date`
   category: string;
   created_at: string;
 };

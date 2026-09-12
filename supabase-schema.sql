@@ -8,6 +8,7 @@ create table if not exists expenses (
   currency text not null default 'ILS',                -- 'ILS' | 'THB' | 'USD'
   rate numeric not null default 1 check (rate > 0),    -- ILS per 1 unit of `currency` at entry time
   date date not null,
+  end_date date,                                       -- last day, for a multi-day expense (car rental, hotel...)
   category text not null default 'אחר',
   created_at timestamptz not null default now()
 );
