@@ -6,6 +6,9 @@ import { supabase, Expense, Currency } from '@/lib/supabase';
 const TARGET_BUDGET = 40000;
 const CAP_BUDGET = 50000;
 
+const TRIP_START = '2026-09-09';
+const TRIP_END = '2026-09-30';
+
 const BASELINE = [
   { label: 'טיסות (הלוך ושוב, שני נוסעים)', amount: 13563 },
   { label: 'מלון בנגקוק - Chatrium Grand (26-29.9, 3 לילות)', amount: 1814.77 },
@@ -30,6 +33,18 @@ function fmt(n: number) {
 }
 function fmtPrecise(n: number) {
   return new Intl.NumberFormat('he-IL', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+}
+function fmtSigned(n: number) {
+  return n >= 0 ? `${fmt(n)} ₪` : `-${fmt(Math.abs(n))} ₪`;
+}
+// Whole days between two 'YYYY-MM-DD' dates, inclusive of both ends.
+function daysBetweenInclusive(a: string, b: string) {
+  const d1 = new Date(`${a}T00:00:00`);
+  const d2 = new Date(`${b}T00:00:00`);
+  return Math.round((d2.getTime() - d1.getTime()) / 86400000) + 1;
+}
+function dayLabel(date: string) {
+  return new Date(`${date}T00:00:00`).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric', weekday: 'short' });
 }
 
 type FormState = {
@@ -149,6 +164,33 @@ export default function Home() {
   const pct = Math.min(100, (totalSpent / TARGET_BUDGET) * 100);
   const barState = totalSpent > CAP_BUDGET ? 'over' : totalSpent > TARGET_BUDGET ? 'warn' : 'ok';
 
+  // Daily pace: split what's left of the target budget across the days remaining in the trip.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const clampedToday = todayStr < TRIP_START ? TRIP_START : todayStr > TRIP_END ? TRIP_END : todayStr;
+  const totalTripDays = daysBetweenInclusive(TRIP_START, TRIP_END);
+  const daysRemaining = Math.max(1, daysBetweenInclusive(clampedToday, TRIP_END));
+  const avgPerDayRemaining = remaining / daysRemaining;
+
+  // Group running expenses by day, chronological (trip order), each day's items in entry order.
+  const dayGroups = useMemo(() => {
+    const map = new Map<string, Expense[]>();
+    for (const e of expenses) {
+      const arr = map.get(e.date) ?? [];
+      arr.push(e);
+      map.set(e.date, arr);
+    }
+    Array.from(map.values()).forEach((arr) => {
+      arr.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+    });
+    return Array.from(map.entries())
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .map(([date, items]) => ({
+        date,
+        items,
+        total: items.reduce((s, e) => s + Number(e.amount), 0),
+      }));
+  }, [expenses]);
+
   // Rate for the currency currently selected in the form
   const editing = editingId ? expenses.find((e) => e.id === editingId) : undefined;
   const formRate =
@@ -262,8 +304,14 @@ export default function Home() {
           <Stat label="הוצא עד כה" value={`${fmt(totalSpent)} ₪`} />
           <Stat
             label="נשאר ליעד"
-            value={`${remaining >= 0 ? fmt(remaining) : '-' + fmt(Math.abs(remaining))} ₪`}
+            value={fmtSigned(remaining)}
             color={remaining >= 0 ? 'var(--good)' : 'var(--over)'}
+          />
+          <Stat
+            full
+            label={`יעד ממוצע ליום (${daysRemaining} ימים נותרו מתוך ${totalTripDays})`}
+            value={`${fmtSigned(avgPerDayRemaining)} / יום`}
+            color={avgPerDayRemaining >= 0 ? 'var(--good)' : 'var(--over)'}
           />
           <div style={{ gridColumn: '1 / -1', padding: 12, borderRadius: 10, background: '#f9f4ea' }}>
             <div style={{ fontSize: 11, color: 'var(--teak)', marginBottom: 3 }}>
@@ -312,6 +360,68 @@ export default function Home() {
               <span>סה"כ מראש</span>
               <span>{fmtPrecise(BASELINE_TOTAL)} ₪</span>
             </div>
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 4 }}>
+          פירוט לפי יום
+        </div>
+        <p style={{ fontSize: 11.5, color: 'var(--teak)', margin: '0 0 10px' }}>
+          כל יום מול היעד הממוצע הנוכחי ({fmt(avgPerDayRemaining)} ₪/יום)
+        </p>
+
+        {dayGroups.length === 0 ? (
+          <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '10px 0' }}>
+            עדיין אין הוצאות שוטפות לפי יום.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {dayGroups.map((g) => {
+              const dayNum = daysBetweenInclusive(TRIP_START, g.date);
+              const overPace = g.total > avgPerDayRemaining;
+              const diff = Math.abs(g.total - avgPerDayRemaining);
+              return (
+                <div key={g.date} style={{ borderRadius: 10, background: '#f9f4ea', padding: '10px 12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--lagoon-deep)' }}>
+                      יום {dayNum} · {dayLabel(g.date)}
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 700 }}>{fmt(g.total)} ₪</div>
+                  </div>
+                  <div style={{ fontSize: 10.5, marginBottom: 6 }}>
+                    <span style={{
+                      display: 'inline-block', padding: '1px 7px', borderRadius: 20,
+                      background: overPace ? '#fbe9e4' : '#e7ede2',
+                      color: overPace ? 'var(--over)' : 'var(--lagoon-deep)',
+                    }}>
+                      {overPace ? `+${fmt(diff)} ₪ מעל היעד היומי` : `${fmt(diff)} ₪ מתחת ליעד היומי`}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {g.items.map((e) => {
+                      const cur = (e.currency ?? 'ILS') as Currency;
+                      const orig = Number(e.original_amount ?? e.amount);
+                      return (
+                        <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
+                          <span>
+                            {e.desc}
+                            <span style={{ color: 'var(--teak)' }}> · {e.category}</span>
+                          </span>
+                          <span style={{ whiteSpace: 'nowrap' }}>
+                            {cur !== 'ILS' && (
+                              <span style={{ color: 'var(--teak)' }}>{fmtPrecise(orig)} {SYM[cur]} · </span>
+                            )}
+                            {fmtPrecise(Number(e.amount))} ₪
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </Card>
@@ -452,9 +562,9 @@ function Card({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
+function Stat({ label, value, color, full }: { label: string; value: string; color?: string; full?: boolean }) {
   return (
-    <div style={{ padding: 12, borderRadius: 10, background: '#f9f4ea' }}>
+    <div style={{ padding: 12, borderRadius: 10, background: '#f9f4ea', gridColumn: full ? '1 / -1' : undefined }}>
       <div style={{ fontSize: 11, color: 'var(--teak)', marginBottom: 3 }}>{label}</div>
       <div style={{ fontSize: 19, fontWeight: 700, color: color || 'var(--ink)' }}>{value}</div>
     </div>
