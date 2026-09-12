@@ -1,15 +1,15 @@
 :root {
-  --sand: #f5efe4;
-  --ink: #2b2320;
-  --teak: #7a5c3e;
-  --lagoon: #1f6f6b;
-  --lagoon-deep: #144e4b;
-  --coral: #d76a4f;
-  --paper: #fffdf8;
-  --line: #e2d6c1;
-  --good: #1f6f6b;
-  --warn: #c47a2c;
-  --over: #b3402f;
+  --sunset: #ff6b35;   /* primary — Thai sunset orange */
+  --sea: #00b4d8;      /* secondary — ocean turquoise */
+  --gold: #ffd166;     /* accent — temple gold */
+  --bg: #fff9f0;       /* warm off-white background */
+  --card: #ffffff;
+  --text: #2d3436;
+  --muted: #8a7f76;
+  --line: #ffe8d6;
+  --good: #06a77d;
+  --warn: #f0a500;
+  --over: #e63946;
 }
 
 * { box-sizing: border-box; }
@@ -17,13 +17,25 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: var(--sand);
-  color: var(--ink);
-  font-family: 'Segoe UI', 'Heebo', system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 
-button, input, select {
+button, input, select, textarea {
   font-family: inherit;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
 }

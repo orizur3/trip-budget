@@ -19,17 +19,17 @@ const BASELINE_TOTAL = BASELINE.reduce((s, b) => s + b.amount, 0);
 
 const CATEGORIES = ['תחבורה', 'אוכל', 'מלון', 'פעילות', 'קניות', 'אחר'];
 
-const CATEGORY_COLORS: Record<string, string> = {
-  'תחבורה': '#1f6f6b',
-  'אוכל': '#d76a4f',
-  'מלון': '#4f7cac',
-  'פעילות': '#8a5fbf',
-  'קניות': '#c9a227',
-  'אחר': '#7a5c3e',
+const CATEGORY_META: Record<string, { emoji: string; color: string }> = {
+  'תחבורה': { emoji: '🛵', color: '#00b4d8' },
+  'אוכל': { emoji: '🍜', color: '#ff6b35' },
+  'מלון': { emoji: '🏨', color: '#6c5ce7' },
+  'פעילות': { emoji: '🛺', color: '#06a77d' },
+  'קניות': { emoji: '🛍️', color: '#e0a900' },
+  'אחר': { emoji: '✨', color: '#ef476f' },
 };
-const FALLBACK_COLOR = '#9a9a9a';
-function colorFor(cat: string) {
-  return CATEGORY_COLORS[cat] ?? FALLBACK_COLOR;
+const FALLBACK_META = { emoji: '❔', color: '#9a9a9a' };
+function metaFor(cat: string) {
+  return CATEGORY_META[cat] ?? FALLBACK_META;
 }
 
 const CURRENCIES: { code: Currency; label: string; sym: string }[] = [
@@ -129,7 +129,7 @@ export default function Home() {
   const [rates, setRates] = useState<Rates | null>(null);
   const [ratesUpdated, setRatesUpdated] = useState<string | null>(null);
   const [ratesStale, setRatesStale] = useState(false);
-  const [tab, setTab] = useState<'track' | 'categories'>('track');
+  const [sheetOpen, setSheetOpen] = useState(false);
 
   // Initial load
   useEffect(() => {
@@ -220,6 +220,7 @@ export default function Home() {
   const remaining = TARGET_BUDGET - totalSpent;
   const pct = Math.min(100, (totalSpent / TARGET_BUDGET) * 100);
   const barState = totalSpent > CAP_BUDGET ? 'over' : totalSpent > TARGET_BUDGET ? 'warn' : 'ok';
+  const ringColor = barState === 'over' ? 'var(--over)' : barState === 'warn' ? 'var(--warn)' : 'var(--sea)';
 
   // Daily pace: split what's left of the target budget across the days remaining in the trip.
   const todayStr = todayLocal();
@@ -232,19 +233,18 @@ export default function Home() {
   // day; a multi-day one like a car rental or hotel covers date..end_date), grouped by day,
   // chronological (trip order), each day's items kept in the order they were entered.
   const daySpread = useMemo(() => {
-    const map = new Map<string, { date: string; total: number; entries: { expense: Expense; share: number; spanDays: number }[]; byCategory: Record<string, number> }>();
+    const map = new Map<string, { date: string; total: number; entries: { expense: Expense; share: number; spanDays: number }[] }>();
     for (const e of expenses) {
       const days = daysInRange(e.date, expenseEndDate(e));
       const share = Number(e.amount) / days.length;
       days.forEach((d) => {
         let bucket = map.get(d);
         if (!bucket) {
-          bucket = { date: d, total: 0, entries: [], byCategory: {} };
+          bucket = { date: d, total: 0, entries: [] };
           map.set(d, bucket);
         }
         bucket.total += share;
         bucket.entries.push({ expense: e, share, spanDays: days.length });
-        bucket.byCategory[e.category] = (bucket.byCategory[e.category] ?? 0) + share;
       });
     }
     Array.from(map.values()).forEach((bucket) => {
@@ -259,11 +259,9 @@ export default function Home() {
     for (const e of expenses) {
       map.set(e.category, (map.get(e.category) ?? 0) + Number(e.amount));
     }
-    return Array.from(map.entries())
-      .map(([category, amount]) => ({ category, amount }))
-      .sort((a, b) => b.amount - a.amount);
+    return map;
   }, [expenses]);
-  const categoryGrandTotal = categoryTotals.reduce((s, c) => s + c.amount, 0);
+  const maxCategoryAmount = Math.max(1, ...Array.from(categoryTotals.values()));
 
   // Rate for the currency currently selected in the form
   const editing = editingId ? expenses.find((e) => e.id === editingId) : undefined;
@@ -278,6 +276,12 @@ export default function Home() {
   const previewIls =
     !isNaN(amountNumRaw) && amountNumRaw > 0 && formRate ? amountNumRaw * formRate : null;
 
+  function openAddSheet() {
+    setEditingId(null);
+    setForm(emptyForm());
+    setSheetOpen(true);
+  }
+
   function startEdit(exp: Expense) {
     setEditingId(exp.id);
     const end = expenseEndDate(exp);
@@ -290,12 +294,13 @@ export default function Home() {
       endDate: end,
       category: exp.category,
     });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setSheetOpen(true);
   }
 
   function cancelEdit() {
     setEditingId(null);
     setForm(emptyForm());
+    setSheetOpen(false);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -351,24 +356,26 @@ export default function Home() {
     }
 
     setForm(emptyForm());
+    setSheetOpen(false);
   }
 
   async function handleDelete(id: string) {
+    if (!window.confirm('למחוק את ההוצאה הזו? לא ניתן לשחזר.')) return;
     if (editingId === id) cancelEdit();
     const { error } = await supabase.from('expenses').delete().eq('id', id);
     if (error) setError('מחיקת ההוצאה נכשלה. נסה שוב.');
   }
 
   return (
-    <div style={{ maxWidth: 480, margin: '0 auto', padding: '20px 16px 40px' }}>
-      <header style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, margin: '0 0 4px', fontWeight: 700, color: 'var(--lagoon-deep)' }}>
+    <div dir="rtl" style={{ maxWidth: 430, margin: '0 auto', padding: '20px 16px 100px', position: 'relative' }}>
+      <header style={{ marginBottom: 20, textAlign: 'right' }}>
+        <h1 style={{ fontSize: 23, margin: '0 0 4px', fontWeight: 800, color: 'var(--sunset)' }}>
           🌴 תקציב הטיול לתאילנד
         </h1>
-        <p style={{ margin: 0, fontSize: 13, color: 'var(--teak)' }}>מעקב הוצאות שוטף מול תקציב היעד</p>
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>מעקב הוצאות שוטף מול תקציב היעד</p>
         <p style={{
-          marginTop: 6, fontSize: 11.5, color: 'var(--lagoon-deep)', background: '#e7ede2',
-          display: 'inline-block', padding: '3px 9px', borderRadius: 20,
+          marginTop: 6, fontSize: 11.5, color: 'var(--sea)', background: '#e5f7fa',
+          display: 'inline-block', padding: '3px 9px', borderRadius: 20, fontWeight: 600,
         }}>
           🔗 מקור אמת אחד — מסונכרן בזמן אמת בין כל המכשירים
         </p>
@@ -376,54 +383,46 @@ export default function Home() {
 
       {error && (
         <div style={{
-          background: '#fbe9e4', border: '1px solid var(--over)', color: 'var(--over)',
-          borderRadius: 10, padding: '10px 12px', fontSize: 12.5, marginBottom: 14, lineHeight: 1.5,
+          background: '#fdecec', border: '1px solid var(--over)', color: 'var(--over)',
+          borderRadius: 12, padding: '10px 12px', fontSize: 12.5, marginBottom: 14, lineHeight: 1.5, textAlign: 'right',
         }}>
           {error}
         </div>
       )}
 
+      {/* Budget ring card */}
       <Card>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <Stat label="הוצא עד כה" value={`${fmt(totalSpent)} ₪`} />
-          <Stat
-            label="נשאר ליעד"
-            value={fmtSigned(remaining)}
-            color={remaining >= 0 ? 'var(--good)' : 'var(--over)'}
-          />
-          <Stat
-            full
-            label={`יעד ממוצע ליום (${daysRemaining} ימים נותרו מתוך ${totalTripDays})`}
-            value={`${fmtSigned(avgPerDayRemaining)} / יום`}
+        <div style={{ position: 'relative', width: 176, height: 176, margin: '0 auto' }}>
+          <ProgressRing pct={pct} color={ringColor} />
+          <div style={{
+            position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 2,
+          }}>
+            <div style={{ fontSize: 11, color: 'var(--muted)' }}>הוצא עד כה</div>
+            <div style={{ fontSize: 22, fontWeight: 800 }}>{fmt(totalSpent)} ₪</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: ringColor }}>{Math.round(pct)}% מהיעד</div>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 18 }}>
+          <MiniStat label="נשאר ליעד" value={fmtSigned(remaining)} color={remaining >= 0 ? 'var(--good)' : 'var(--over)'} />
+          <MiniStat
+            label={`יעד ליום (${daysRemaining} נותרו)`}
+            value={fmtSigned(avgPerDayRemaining)}
             color={avgPerDayRemaining >= 0 ? 'var(--good)' : 'var(--over)'}
           />
-          <div style={{ gridColumn: '1 / -1', padding: 12, borderRadius: 10, background: '#f9f4ea' }}>
-            <div style={{ fontSize: 11, color: 'var(--teak)', marginBottom: 3 }}>
-              התקדמות ביחס ליעד ({fmt(TARGET_BUDGET)} ₪)
-            </div>
-            <div style={{ height: 10, background: '#eee2cf', borderRadius: 6, overflow: 'hidden', marginTop: 10 }}>
-              <div
-                style={{
-                  height: '100%',
-                  width: `${pct}%`,
-                  borderRadius: 6,
-                  transition: 'width 0.4s ease',
-                  background: barState === 'over' ? 'var(--over)' : barState === 'warn' ? 'var(--warn)' : 'var(--lagoon)',
-                }}
-              />
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--teak)', marginTop: 6 }}>
-              <span>{Math.round(pct)}% מהיעד</span>
-              <span>תקרה: {fmt(CAP_BUDGET)} ₪</span>
-            </div>
-          </div>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--muted)', marginTop: 12 }}>
+          <span>יעד: {fmt(TARGET_BUDGET)} ₪</span>
+          <span>תקרה: {fmt(CAP_BUDGET)} ₪</span>
         </div>
 
         <button
           onClick={() => setShowBaseline((s) => !s)}
           style={{
-            background: 'none', border: 'none', color: 'var(--lagoon)', fontSize: 13,
-            fontWeight: 600, padding: 0, marginTop: 12, cursor: 'pointer',
+            background: 'none', border: 'none', color: 'var(--sea)', fontSize: 13,
+            fontWeight: 700, padding: 0, marginTop: 14, cursor: 'pointer',
           }}
         >
           {showBaseline ? 'הסתר פירוט הוצאות שנקבעו מראש ▴' : 'הצג פירוט הוצאות שנקבעו מראש (טיסות ומלונות) ▾'}
@@ -439,98 +438,191 @@ export default function Home() {
             ))}
             <div style={{
               display: 'flex', justifyContent: 'space-between', fontSize: 14, fontWeight: 700,
-              color: 'var(--lagoon-deep)', paddingTop: 8, marginTop: 4, borderTop: '1px solid var(--line)',
+              color: 'var(--sunset)', paddingTop: 8, marginTop: 4, borderTop: '1px solid var(--line)',
             }}>
-              <span>סה"כ מראש</span>
+              <span>סה&quot;כ מראש</span>
               <span>{fmtPrecise(BASELINE_TOTAL)} ₪</span>
             </div>
           </div>
         )}
       </Card>
 
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: '#f0e9da', padding: 4, borderRadius: 10 }}>
-        <TabButton active={tab === 'track'} onClick={() => setTab('track')}>מעקב יומי</TabButton>
-        <TabButton active={tab === 'categories'} onClick={() => setTab('categories')}>קטגוריות</TabButton>
-      </div>
-
-      {tab === 'track' && (
-        <>
-          <Card>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 4 }}>
-              פירוט לפי יום
-            </div>
-            <p style={{ fontSize: 11.5, color: 'var(--teak)', margin: '0 0 10px' }}>
-              כל יום מול היעד הממוצע הנוכחי ({fmt(avgPerDayRemaining)} ₪/יום) · הוצאה מתמשכת מחולקת שווה בשווה
-            </p>
-
-            {daySpread.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '10px 0' }}>
-                עדיין אין הוצאות שוטפות לפי יום.
+      {/* Category grid */}
+      <Card>
+        <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 12 }}>פילוח לפי קטגוריה</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          {CATEGORIES.map((cat) => {
+            const amount = categoryTotals.get(cat) ?? 0;
+            const meta = metaFor(cat);
+            const relPct = (amount / maxCategoryAmount) * 100;
+            return (
+              <div key={cat} style={{ background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 14, padding: 12 }}>
+                <div style={{ fontSize: 26 }}>{meta.emoji}</div>
+                <div style={{ fontSize: 12.5, fontWeight: 700, marginTop: 4 }}>{cat}</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: meta.color, marginTop: 2 }}>{fmt(amount)} ₪</div>
+                <div style={{ height: 6, background: 'var(--line)', borderRadius: 4, overflow: 'hidden', marginTop: 8 }}>
+                  <div style={{ height: '100%', width: `${relPct}%`, background: meta.color, transition: 'width 0.6s ease' }} />
+                </div>
               </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {daySpread.map((day) => {
-                  const dayNum = daysBetweenInclusive(TRIP_START, day.date);
-                  const overPace = day.total > avgPerDayRemaining;
-                  const diff = Math.abs(day.total - avgPerDayRemaining);
-                  return (
-                    <div key={day.date} style={{ borderRadius: 10, background: '#f9f4ea', padding: '10px 12px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--lagoon-deep)' }}>
-                          יום {dayNum} · {dayLabel(day.date)}
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* Day-by-day pacing */}
+      <Card>
+        <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>פירוט לפי יום</div>
+        <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '0 0 10px' }}>
+          כל יום מול היעד הממוצע הנוכחי ({fmt(avgPerDayRemaining)} ₪/יום) · הוצאה מתמשכת מחולקת שווה בשווה
+        </p>
+
+        {daySpread.length === 0 ? (
+          <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 13, padding: '10px 0' }}>
+            עדיין אין הוצאות שוטפות לפי יום.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {daySpread.map((day) => {
+              const dayNum = daysBetweenInclusive(TRIP_START, day.date);
+              const overPace = day.total > avgPerDayRemaining;
+              const diff = Math.abs(day.total - avgPerDayRemaining);
+              return (
+                <div key={day.date} style={{ borderRadius: 12, background: 'var(--bg)', border: '1px solid var(--line)', padding: '10px 12px', animation: 'fadeInUp 0.3s ease' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--sunset)' }}>
+                      יום {dayNum} · {dayLabel(day.date)}
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 800 }}>{fmt(day.total)} ₪</div>
+                  </div>
+                  <div style={{ fontSize: 10.5, marginBottom: 6 }}>
+                    <span style={{
+                      display: 'inline-block', padding: '1px 7px', borderRadius: 20, fontWeight: 600,
+                      background: overPace ? '#fdecec' : '#e6f7f1',
+                      color: overPace ? 'var(--over)' : 'var(--good)',
+                    }}>
+                      {overPace ? `+${fmt(diff)} ₪ מעל היעד היומי` : `${fmt(diff)} ₪ מתחת ליעד היומי`}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {day.entries.map(({ expense: e, share, spanDays }) => {
+                      const cur = (e.currency ?? 'ILS') as Currency;
+                      const orig = Number(e.original_amount ?? e.amount);
+                      return (
+                        <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
+                          <span>
+                            {metaFor(e.category).emoji} {e.desc}
+                            {spanDays > 1 && (
+                              <span style={{ color: 'var(--muted)' }}> · {dateRangeLabel(e)}</span>
+                            )}
+                          </span>
+                          <span style={{ whiteSpace: 'nowrap' }}>
+                            {spanDays > 1 ? (
+                              `${fmtPrecise(share)} ₪/יום`
+                            ) : (
+                              <>
+                                {cur !== 'ILS' && (
+                                  <span style={{ color: 'var(--muted)' }}>{fmtPrecise(orig)} {SYM[cur]} · </span>
+                                )}
+                                {fmtPrecise(Number(e.amount))} ₪
+                              </>
+                            )}
+                          </span>
                         </div>
-                        <div style={{ fontSize: 14, fontWeight: 700 }}>{fmt(day.total)} ₪</div>
-                      </div>
-                      <div style={{ fontSize: 10.5, marginBottom: 6 }}>
-                        <span style={{
-                          display: 'inline-block', padding: '1px 7px', borderRadius: 20,
-                          background: overPace ? '#fbe9e4' : '#e7ede2',
-                          color: overPace ? 'var(--over)' : 'var(--lagoon-deep)',
-                        }}>
-                          {overPace ? `+${fmt(diff)} ₪ מעל היעד היומי` : `${fmt(diff)} ₪ מתחת ליעד היומי`}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        {day.entries.map(({ expense: e, share, spanDays }) => {
-                          const cur = (e.currency ?? 'ILS') as Currency;
-                          const orig = Number(e.original_amount ?? e.amount);
-                          return (
-                            <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
-                              <span>
-                                {e.desc}
-                                <span style={{ color: 'var(--teak)' }}> · {e.category}</span>
-                                {spanDays > 1 && (
-                                  <span style={{ color: 'var(--teak)' }}> · {dateRangeLabel(e)}</span>
-                                )}
-                              </span>
-                              <span style={{ whiteSpace: 'nowrap' }}>
-                                {spanDays > 1 ? (
-                                  `${fmtPrecise(share)} ₪/יום`
-                                ) : (
-                                  <>
-                                    {cur !== 'ILS' && (
-                                      <span style={{ color: 'var(--teak)' }}>{fmtPrecise(orig)} {SYM[cur]} · </span>
-                                    )}
-                                    {fmtPrecise(Number(e.amount))} ₪
-                                  </>
-                                )}
-                              </span>
-                            </div>
-                          );
-                        })}
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      {/* Recent expenses */}
+      <Card>
+        <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>
+          הוצאות שוטפות {expenses.length > 0 && <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 400 }}>({expenses.length})</span>}
+        </div>
+        <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '0 0 10px' }}>
+          הקישו על כרטיס כדי לערוך
+          {ratesUpdated && <> · שער חליפין עודכן: {new Date(ratesUpdated).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}</>}
+        </p>
+
+        {loading ? (
+          <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 13, padding: '20px 0' }}>טוען...</div>
+        ) : expenses.length === 0 ? (
+          <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 13, padding: '20px 0' }}>
+            עדיין לא נוספו הוצאות שוטפות.<br />הראשונה תופיע כאן.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {expenses.map((e) => {
+              const cur = (e.currency ?? 'ILS') as Currency;
+              const orig = Number(e.original_amount ?? e.amount);
+              const spanDays = daysBetweenInclusive(e.date, expenseEndDate(e));
+              const meta = metaFor(e.category);
+              return (
+                <div
+                  key={e.id}
+                  onClick={() => startEdit(e)}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+                    padding: '10px 12px', borderRadius: 14, background: 'var(--bg)', border: '1px solid var(--line)',
+                    cursor: 'pointer', animation: 'fadeInUp 0.3s ease',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                    <div style={{
+                      fontSize: 20, width: 38, height: 38, borderRadius: '50%', flexShrink: 0,
+                      background: `${meta.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      {meta.emoji}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.desc}</div>
+                      <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                        {dateRangeLabel(e)}
+                        {cur !== 'ILS' && ` · ${fmtPrecise(orig)} ${SYM[cur]}`}
+                        {spanDays > 1 && ` · ${spanDays} ימים`}
                       </div>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </Card>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, whiteSpace: 'nowrap' }}>{fmtPrecise(Number(e.amount))} ₪</div>
+                    <button
+                      onClick={(ev) => { ev.stopPropagation(); handleDelete(e.id); }}
+                      aria-label="מחק"
+                      style={delBtnStyle}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
 
-          <Card>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 10 }}>
-              {editingId ? 'עריכת הוצאה' : 'הוסף הוצאה'}
+      {/* Floating action button */}
+      {!sheetOpen && (
+        <button onClick={openAddSheet} aria-label="הוסף הוצאה" style={fabStyle}>
+          +
+        </button>
+      )}
+
+      {/* Bottom sheet: add / edit expense */}
+      {sheetOpen && (
+        <>
+          <div onClick={cancelEdit} style={overlayStyle} />
+          <div style={sheetStyle}>
+            <div style={{ width: 40, height: 4, background: 'var(--line)', borderRadius: 2, margin: '0 auto 16px' }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <div style={{ fontSize: 16, fontWeight: 800 }}>{editingId ? 'עריכת הוצאה' : 'הוצאה חדשה'}</div>
+              <button onClick={cancelEdit} aria-label="סגור" style={{ background: 'none', border: 'none', fontSize: 20, color: 'var(--muted)', cursor: 'pointer' }}>✕</button>
             </div>
-            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+
+            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <Input
                 placeholder="תיאור ההוצאה (למשל: מונית, ארוחת ערב)"
                 value={form.desc}
@@ -558,14 +650,14 @@ export default function Home() {
                 </select>
               </div>
 
-              <div style={{ fontSize: 11.5, color: 'var(--teak)', minHeight: 16, lineHeight: 1.5 }}>
+              <div style={{ fontSize: 11.5, color: 'var(--muted)', minHeight: 16, lineHeight: 1.5 }}>
                 {form.currency === 'ILS' ? (
                   'סכום בשקלים — נשמר כמו שהוא'
                 ) : formRate ? (
                   <>
                     1 {SYM[form.currency]} ≈ {fmtPrecise(formRate)} ₪
                     {previewIls != null && (
-                      <> · ≈ <strong style={{ color: 'var(--lagoon-deep)' }}>{fmtPrecise(previewIls)} ₪</strong></>
+                      <> · ≈ <strong style={{ color: 'var(--sunset)' }}>{fmtPrecise(previewIls)} ₪</strong></>
                     )}
                     {ratesStale && ' · שער שמור (אין חיבור)'}
                   </>
@@ -574,7 +666,7 @@ export default function Home() {
                 )}
               </div>
 
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--teak)', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--muted)', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={form.spread}
@@ -584,60 +676,48 @@ export default function Home() {
               </label>
 
               {form.spread ? (
-                <>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                    <Field label="מתאריך">
-                      <Input
-                        type="date"
-                        value={form.date}
-                        onChange={(v) => setForm((f) => ({ ...f, date: v }))}
-                        required
-                      />
-                    </Field>
-                    <Field label="עד תאריך (כולל)">
-                      <Input
-                        type="date"
-                        value={form.endDate}
-                        onChange={(v) => setForm((f) => ({ ...f, endDate: v }))}
-                        min={form.date}
-                        required
-                      />
-                    </Field>
-                  </div>
-                  <Field label="קטגוריה">
-                    <select
-                      value={form.category}
-                      onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-                      style={selectStyle}
-                    >
-                      {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                  </Field>
-                </>
-              ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                  <Field label="תאריך">
-                    <Input
-                      type="date"
-                      value={form.date}
-                      onChange={(v) => setForm((f) => ({ ...f, date: v }))}
-                      required
-                    />
+                  <Field label="מתאריך">
+                    <Input type="date" value={form.date} onChange={(v) => setForm((f) => ({ ...f, date: v }))} required />
                   </Field>
-                  <Field label="קטגוריה">
-                    <select
-                      value={form.category}
-                      onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-                      style={selectStyle}
-                    >
-                      {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </select>
+                  <Field label="עד תאריך (כולל)">
+                    <Input type="date" value={form.endDate} onChange={(v) => setForm((f) => ({ ...f, endDate: v }))} min={form.date} required />
                   </Field>
                 </div>
+              ) : (
+                <Field label="תאריך">
+                  <Input type="date" value={form.date} onChange={(v) => setForm((f) => ({ ...f, date: v }))} required />
+                </Field>
               )}
 
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button type="submit" style={{ ...btnAddStyle, flex: 1, background: editingId ? 'var(--coral)' : 'var(--lagoon)' }}>
+              <div>
+                <span style={{ fontSize: 11, color: 'var(--muted)' }}>קטגוריה</span>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 4 }}>
+                  {CATEGORIES.map((c) => {
+                    const meta = metaFor(c);
+                    const active = form.category === c;
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setForm((f) => ({ ...f, category: c }))}
+                        style={{
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                          padding: '10px 4px', borderRadius: 12, cursor: 'pointer',
+                          border: active ? `2px solid ${meta.color}` : '2px solid transparent',
+                          background: active ? `${meta.color}22` : 'var(--bg)',
+                        }}
+                      >
+                        <span style={{ fontSize: 20 }}>{meta.emoji}</span>
+                        <span style={{ fontSize: 10.5, fontWeight: 600 }}>{c}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                <button type="submit" style={{ ...btnAddStyle, flex: 1 }}>
                   {editingId ? 'שמור שינויים' : 'הוסף הוצאה'}
                 </button>
                 {editingId && (
@@ -645,114 +725,7 @@ export default function Home() {
                 )}
               </div>
             </form>
-          </Card>
-
-          <Card>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 4 }}>
-              הוצאות שוטפות {expenses.length > 0 && <span style={{ fontSize: 12, color: 'var(--teak)', fontWeight: 400 }}>({expenses.length})</span>}
-            </div>
-            <p style={{ fontSize: 11.5, color: 'var(--teak)', margin: '0 0 10px' }}>
-              לחצו על ✎ כדי לערוך הוצאה קיימת
-              {ratesUpdated && <> · שער חליפין עודכן: {new Date(ratesUpdated).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}</>}
-            </p>
-
-            {loading ? (
-              <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '20px 0' }}>טוען...</div>
-            ) : expenses.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '20px 0' }}>
-                עדיין לא נוספו הוצאות שוטפות.<br />הראשונה תופיע כאן.
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {expenses.map((e) => {
-                  const cur = (e.currency ?? 'ILS') as Currency;
-                  const orig = Number(e.original_amount ?? e.amount);
-                  const spanDays = daysBetweenInclusive(e.date, expenseEndDate(e));
-                  return (
-                    <div key={e.id} style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                      padding: '10px 4px', borderBottom: '1px solid var(--line)',
-                    }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <div style={{ fontSize: 14, fontWeight: 600 }}>{e.desc}</div>
-                        <div style={{ fontSize: 11.5, color: 'var(--teak)' }}>
-                          <span style={{
-                            display: 'inline-block', fontSize: 10.5, padding: '1px 7px', borderRadius: 20,
-                            background: '#e7ede2', color: 'var(--lagoon-deep)', marginLeft: 6,
-                          }}>
-                            {e.category}
-                          </span>
-                          {dateRangeLabel(e)}
-                          {cur !== 'ILS' && ` · ${fmtPrecise(orig)} ${SYM[cur]}`}
-                          {spanDays > 1 && ` · ${spanDays} ימים`}
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: 'nowrap' }}>{fmtPrecise(Number(e.amount))} ₪</div>
-                        <button onClick={() => startEdit(e)} aria-label="ערוך" style={editBtnStyle}>✎</button>
-                        <button onClick={() => handleDelete(e.id)} aria-label="מחק" style={delBtnStyle}>✕</button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </Card>
-        </>
-      )}
-
-      {tab === 'categories' && (
-        <>
-          <Card>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 10 }}>
-              פילוח קטגוריות — סה"כ הוצאות שוטפות
-            </div>
-            {categoryTotals.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '20px 0' }}>
-                עדיין אין הוצאות לפילוח.
-              </div>
-            ) : (
-              <>
-                <Donut segments={categoryTotals} total={categoryGrandTotal} />
-                <CategoryLegend segments={categoryTotals} total={categoryGrandTotal} />
-              </>
-            )}
-          </Card>
-
-          <Card>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--lagoon-deep)', marginBottom: 4 }}>
-              פילוח קטגוריות לפי יום
-            </div>
-            <p style={{ fontSize: 11.5, color: 'var(--teak)', margin: '0 0 10px' }}>
-              הוצאה מתמשכת (רכב/מלון) מחולקת שווה בשווה על פני הימים שלה
-            </p>
-            {daySpread.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--teak)', fontSize: 13, padding: '10px 0' }}>
-                עדיין אין נתונים.
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {daySpread.map((day) => {
-                  const dayNum = daysBetweenInclusive(TRIP_START, day.date);
-                  const cats = Object.entries(day.byCategory).sort((a, b) => b[1] - a[1]);
-                  return (
-                    <div key={day.date}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                        <span style={{ fontWeight: 600 }}>יום {dayNum} · {dayLabel(day.date)}</span>
-                        <span>{fmt(day.total)} ₪</span>
-                      </div>
-                      <div style={{ display: 'flex', height: 10, borderRadius: 6, overflow: 'hidden', background: '#eee2cf' }}>
-                        {cats.map(([cat, amt]) => (
-                          <div key={cat} title={`${cat}: ${fmtPrecise(amt)} ₪`} style={{ width: `${(amt / day.total) * 100}%`, background: colorFor(cat) }} />
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-                <CategoryLegend segments={categoryTotals} total={categoryGrandTotal} />
-              </div>
-            )}
-          </Card>
+          </div>
         </>
       )}
     </div>
@@ -761,17 +734,41 @@ export default function Home() {
 
 function Card({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ background: 'var(--paper)', border: '1px solid var(--line)', borderRadius: 14, padding: 16, marginBottom: 14 }}>
+    <div style={{ background: 'var(--card)', border: '1px solid var(--line)', borderRadius: 18, padding: 16, marginBottom: 14, boxShadow: '0 2px 10px rgba(45,52,54,0.04)' }}>
       {children}
     </div>
   );
 }
 
-function Stat({ label, value, color, full }: { label: string; value: string; color?: string; full?: boolean }) {
+function ProgressRing({ pct, color, size = 176, stroke = 16 }: { pct: number; color: string; size?: number; stroke?: number }) {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const clamped = Math.min(100, Math.max(0, pct));
+  const offset = c * (1 - clamped / 100);
   return (
-    <div style={{ padding: 12, borderRadius: 10, background: '#f9f4ea', gridColumn: full ? '1 / -1' : undefined }}>
-      <div style={{ fontSize: 11, color: 'var(--teak)', marginBottom: 3 }}>{label}</div>
-      <div style={{ fontSize: 19, fontWeight: 700, color: color || 'var(--ink)' }}>{value}</div>
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: 'rotate(-90deg)' }}>
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--line)" strokeWidth={stroke} />
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={r}
+        fill="none"
+        stroke={color}
+        strokeWidth={stroke}
+        strokeLinecap="round"
+        strokeDasharray={c}
+        strokeDashoffset={offset}
+        style={{ transition: 'stroke-dashoffset 0.8s ease' }}
+      />
+    </svg>
+  );
+}
+
+function MiniStat({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div style={{ padding: 12, borderRadius: 12, background: 'var(--bg)', border: '1px solid var(--line)' }}>
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 17, fontWeight: 800, color: color || 'var(--text)' }}>{value}</div>
     </div>
   );
 }
@@ -779,67 +776,8 @@ function Stat({ label, value, color, full }: { label: string; value: string; col
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <span style={{ fontSize: 11, color: 'var(--teak)' }}>{label}</span>
+      <span style={{ fontSize: 11, color: 'var(--muted)' }}>{label}</span>
       {children}
-    </div>
-  );
-}
-
-function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        flex: 1, padding: '8px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
-        fontSize: 13, fontWeight: 600,
-        background: active ? 'var(--paper)' : 'transparent',
-        color: active ? 'var(--lagoon-deep)' : 'var(--teak)',
-        boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Donut({ segments, total }: { segments: { category: string; amount: number }[]; total: number }) {
-  if (total <= 0) return null;
-  let acc = 0;
-  const stops = segments.map((s) => {
-    const from = (acc / total) * 100;
-    acc += s.amount;
-    const to = (acc / total) * 100;
-    return `${colorFor(s.category)} ${from}% ${to}%`;
-  });
-  return (
-    <div style={{ position: 'relative', width: 168, height: 168, margin: '0 auto' }}>
-      <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: `conic-gradient(${stops.join(', ')})` }} />
-      <div style={{
-        position: 'absolute', inset: 26, borderRadius: '50%', background: 'var(--paper)',
-        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <div style={{ fontSize: 10.5, color: 'var(--teak)' }}>סה&quot;כ</div>
-        <div style={{ fontSize: 16, fontWeight: 700 }}>{fmt(total)} ₪</div>
-      </div>
-    </div>
-  );
-}
-
-function CategoryLegend({ segments, total }: { segments: { category: string; amount: number }[]; total: number }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
-      {segments.map((s) => (
-        <div key={s.category} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 9, height: 9, borderRadius: '50%', background: colorFor(s.category), display: 'inline-block' }} />
-            {s.category}
-          </span>
-          <span>
-            {fmtPrecise(s.amount)} ₪
-            <span style={{ color: 'var(--teak)' }}> · {total > 0 ? Math.round((s.amount / total) * 100) : 0}%</span>
-          </span>
-        </div>
-      ))}
     </div>
   );
 }
@@ -858,20 +796,33 @@ function Input({
 }
 
 const inputStyle: React.CSSProperties = {
-  fontSize: 15, padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 8,
-  background: 'var(--paper)', color: 'var(--ink)', width: '100%',
+  fontSize: 15, padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 10,
+  background: 'var(--bg)', color: 'var(--text)', width: '100%', textAlign: 'right',
 };
 const selectStyle: React.CSSProperties = { ...inputStyle };
 const btnAddStyle: React.CSSProperties = {
-  color: 'white', border: 'none', borderRadius: 8, padding: 12, fontSize: 15, fontWeight: 600, cursor: 'pointer',
+  color: 'white', border: 'none', borderRadius: 12, padding: 14, fontSize: 15, fontWeight: 700,
+  cursor: 'pointer', background: 'var(--sunset)', boxShadow: '0 4px 14px rgba(255,107,53,0.35)',
 };
 const btnCancelStyle: React.CSSProperties = {
-  background: 'none', border: '1px solid var(--line)', borderRadius: 8, padding: 12,
-  fontSize: 15, fontWeight: 600, color: 'var(--teak)', flex: 1, cursor: 'pointer',
-};
-const editBtnStyle: React.CSSProperties = {
-  background: 'none', border: 'none', color: 'var(--lagoon)', fontSize: 15, padding: '2px 6px', cursor: 'pointer',
+  background: 'none', border: '1px solid var(--line)', borderRadius: 12, padding: 14,
+  fontSize: 15, fontWeight: 700, color: 'var(--muted)', flex: 1, cursor: 'pointer',
 };
 const delBtnStyle: React.CSSProperties = {
-  background: 'none', border: 'none', color: 'var(--over)', fontSize: 18, padding: '2px 6px', cursor: 'pointer',
+  background: 'none', border: 'none', color: 'var(--over)', fontSize: 16, padding: '4px 6px', cursor: 'pointer',
+};
+const fabStyle: React.CSSProperties = {
+  position: 'fixed', bottom: 24, left: 24, width: 60, height: 60, borderRadius: '50%',
+  background: 'var(--sunset)', color: '#fff', border: 'none', fontSize: 30, lineHeight: 1,
+  boxShadow: '0 8px 22px rgba(255,107,53,0.45)', cursor: 'pointer', zIndex: 40,
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+};
+const overlayStyle: React.CSSProperties = {
+  position: 'fixed', inset: 0, background: 'rgba(45,52,54,0.45)', zIndex: 50, animation: 'fadeIn 0.2s ease',
+};
+const sheetStyle: React.CSSProperties = {
+  position: 'fixed', bottom: 0, left: 0, right: 0, maxWidth: 430, margin: '0 auto',
+  background: 'var(--card)', borderRadius: '22px 22px 0 0', padding: '16px 18px 24px',
+  zIndex: 51, maxHeight: '88vh', overflowY: 'auto', animation: 'slideUp 0.25s ease',
+  boxShadow: '0 -10px 30px rgba(0,0,0,0.15)', textAlign: 'right',
 };
