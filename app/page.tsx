@@ -276,6 +276,15 @@ export default function Home() {
   const todaySpent = daySpread.find((d) => d.date === todayStr)?.total ?? 0;
   const todayOver = todaySpent > avgPerDayRemaining;
 
+  // Trip summary — only days up to today count (a hotel booked ahead is spread into future days).
+  const elapsedDays = tripPhase === 'before' ? 0 : todayDayNum;
+  const pastDays = daySpread.filter((d) => d.date <= clampedToday);
+  const spentToDate = pastDays.reduce((s, d) => s + d.total, 0);
+  const avgPerDaySoFar = elapsedDays > 0 ? spentToDate / elapsedDays : 0;
+  const priciestDay = pastDays.reduce<(typeof daySpread)[number] | null>((m, d) => (!m || d.total > m.total ? d : m), null);
+  const topCategory = Array.from(categoryTotals.entries()).sort((a, b) => b[1] - a[1])[0];
+  const biggestExpense = expenses.reduce<Expense | null>((m, e) => (!m || Number(e.amount) > Number(m.amount) ? e : m), null);
+
   // Rate for the currency currently selected in the form
   const editing = editingId ? expenses.find((e) => e.id === editingId) : undefined;
   const formRate =
@@ -522,6 +531,54 @@ export default function Home() {
         )}
       </Card>
 
+      {/* Trip summary */}
+      {elapsedDays > 0 && expenses.length > 0 && (
+        <Card>
+          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 12 }}>
+            {tripPhase === 'after' ? '🏁 סיכום הטיול' : '📊 סיכום עד כה'}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <SummaryTile
+              label="סה״כ מול היעד"
+              value={`${fmt(totalSpent)} ₪`}
+              sub={remaining >= 0 ? `${fmt(remaining)} ₪ מתחת ליעד` : `חריגה של ${fmt(-remaining)} ₪`}
+              subColor={remaining >= 0 ? 'var(--good)' : 'var(--over)'}
+            />
+            <SummaryTile
+              label="ממוצע הוצאות ליום"
+              value={`${fmt(avgPerDaySoFar)} ₪`}
+              sub={`על פני ${elapsedDays} ימים`}
+            />
+            {priciestDay && (
+              <SummaryTile
+                label="היום היקר ביותר"
+                value={`${fmt(priciestDay.total)} ₪`}
+                sub={`יום ${daysBetweenInclusive(TRIP_START, priciestDay.date)} · ${shortDate(priciestDay.date)}`}
+              />
+            )}
+            {topCategory && (
+              <SummaryTile
+                label="הקטגוריה הגדולה"
+                value={`${metaFor(topCategory[0]).emoji} ${topCategory[0]}`}
+                sub={`${fmt(topCategory[1])} ₪ · ${Math.round((topCategory[1] / Math.max(1, dailyTotal)) * 100)}%`}
+              />
+            )}
+            {biggestExpense && (
+              <SummaryTile
+                label="ההוצאה הגדולה ביותר"
+                value={biggestExpense.desc}
+                sub={`${fmt(Number(biggestExpense.amount))} ₪ · ${dateRangeLabel(biggestExpense)}`}
+              />
+            )}
+            <SummaryTile
+              label="מספר הוצאות"
+              value={`${expenses.length}`}
+              sub={`כ-${(expenses.length / elapsedDays).toFixed(1)} ליום`}
+            />
+          </div>
+        </Card>
+      )}
+
       {/* Category grid */}
       <Card>
         <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 12 }}>פילוח לפי קטגוריה</div>
@@ -550,7 +607,7 @@ export default function Home() {
           פירוט לפי יום {expenses.length > 0 && <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 400 }}>({expenses.length})</span>}
         </div>
         <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '0 0 10px' }}>
-          כל יום מול היעד הממוצע הנוכחי ({fmt(avgPerDayRemaining)} ₪/יום) · הקישו על הוצאה כדי לערוך
+          מהיום האחרון לראשון · כל יום מול היעד הממוצע הנוכחי ({fmt(avgPerDayRemaining)} ₪/יום) · הקישו על הוצאה כדי לערוך
           {ratesUpdated && <> · שער חליפין עודכן: {new Date(ratesUpdated).toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric' })}</>}
         </p>
 
@@ -562,7 +619,7 @@ export default function Home() {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {daySpread.map((day) => {
+            {[...daySpread].reverse().map((day) => {
               const dayNum = daysBetweenInclusive(TRIP_START, day.date);
               const overPace = day.total > avgPerDayRemaining;
               const diff = Math.abs(day.total - avgPerDayRemaining);
@@ -806,6 +863,16 @@ function ProgressRing({ pct, color, size = 176, stroke = 16 }: { pct: number; co
         style={{ transition: 'stroke-dashoffset 0.8s ease' }}
       />
     </svg>
+  );
+}
+
+function SummaryTile({ label, value, sub, subColor }: { label: string; value: string; sub?: string; subColor?: string }) {
+  return (
+    <div style={{ padding: 12, borderRadius: 12, background: 'var(--bg)', border: '1px solid var(--line)', minWidth: 0 }}>
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, fontWeight: 600, color: subColor || 'var(--muted)', marginTop: 2 }}>{sub}</div>}
+    </div>
   );
 }
 
