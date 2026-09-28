@@ -229,6 +229,16 @@ export default function Home() {
   const daysRemaining = Math.max(1, daysBetweenInclusive(clampedToday, TRIP_END));
   const avgPerDayRemaining = remaining / daysRemaining;
 
+  // Where are we in the trip right now
+  const tripPhase: 'before' | 'during' | 'after' =
+    todayStr < TRIP_START ? 'before' : todayStr > TRIP_END ? 'after' : 'during';
+  const todayDayNum = daysBetweenInclusive(TRIP_START, clampedToday);
+  const daysUntilTrip = daysBetweenInclusive(todayStr, TRIP_START) - 1;
+
+  function scrollToToday() {
+    document.getElementById(`day-${todayStr}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
   // Spread every expense evenly across the days it covers (a normal expense covers just its own
   // day; a multi-day one like a car rental or hotel covers date..end_date), grouped by day,
   // chronological (trip order), each day's items kept in the order they were entered.
@@ -262,6 +272,9 @@ export default function Home() {
     return map;
   }, [expenses]);
   const maxCategoryAmount = Math.max(1, ...Array.from(categoryTotals.values()));
+
+  const todaySpent = daySpread.find((d) => d.date === todayStr)?.total ?? 0;
+  const todayOver = todaySpent > avgPerDayRemaining;
 
   // Rate for the currency currently selected in the form
   const editing = editingId ? expenses.find((e) => e.id === editingId) : undefined;
@@ -390,6 +403,68 @@ export default function Home() {
         </div>
       )}
 
+      {/* Where we are in the trip */}
+      <div style={{
+        background: 'linear-gradient(135deg, var(--sunset), #ff9f1c)', color: '#fff',
+        borderRadius: 18, padding: '16px 18px', marginBottom: 14,
+        boxShadow: '0 6px 18px rgba(255,107,53,0.3)',
+      }}>
+        {tripPhase === 'before' ? (
+          <div style={{ fontSize: 18, fontWeight: 800 }}>
+            הטיול מתחיל בעוד {daysUntilTrip} {daysUntilTrip === 1 ? 'יום' : 'ימים'} ✈️
+          </div>
+        ) : tripPhase === 'after' ? (
+          <div style={{ fontSize: 18, fontWeight: 800 }}>הטיול הסתיים 🏠 · {totalTripDays} ימים</div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+              <div>
+                <div style={{ fontSize: 12, opacity: 0.9 }}>{dayLabel(todayStr)}</div>
+                <div style={{ fontSize: 30, fontWeight: 800, lineHeight: 1.1 }}>
+                  יום {todayDayNum} <span style={{ fontSize: 15, fontWeight: 600, opacity: 0.9 }}>מתוך {totalTripDays}</span>
+                </div>
+              </div>
+              <div style={{ fontSize: 12.5, fontWeight: 700, textAlign: 'left' }}>
+                {daysRemaining === 1 ? 'היום האחרון! 🌅' : daysRemaining === 2 ? 'עוד יום אחד' : `עוד ${daysRemaining - 1} ימים`}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 3, marginTop: 12 }}>
+              {Array.from({ length: totalTripDays }, (_, i) => {
+                const n = i + 1;
+                return (
+                  <div
+                    key={n}
+                    style={{
+                      flex: 1, height: n === todayDayNum ? 10 : 6, borderRadius: 3, alignSelf: 'center',
+                      background: n < todayDayNum ? 'rgba(255,255,255,0.9)' : n === todayDayNum ? 'var(--gold)' : 'rgba(255,255,255,0.3)',
+                    }}
+                  />
+                );
+              })}
+            </div>
+
+            <button
+              onClick={scrollToToday}
+              style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%',
+                marginTop: 12, padding: '8px 12px', borderRadius: 12, border: 'none', cursor: 'pointer',
+                background: 'rgba(255,255,255,0.18)', color: '#fff', fontSize: 13, fontWeight: 600,
+              }}
+            >
+              <span style={{ whiteSpace: 'nowrap' }}>היום: <strong>{fmt(todaySpent)} ₪</strong> / {fmt(avgPerDayRemaining)} ₪</span>
+              <span style={{
+                fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 700, whiteSpace: 'nowrap',
+                background: todayOver ? 'var(--over)' : 'rgba(255,255,255,0.9)',
+                color: todayOver ? '#fff' : 'var(--good)',
+              }}>
+                {todayOver ? `+${fmt(todaySpent - avgPerDayRemaining)} ₪` : `נשארו ${fmt(avgPerDayRemaining - todaySpent)} ₪`}
+              </span>
+            </button>
+          </>
+        )}
+      </div>
+
       {/* Budget ring card */}
       <Card>
         <div style={{ position: 'relative', width: 176, height: 176, margin: '0 auto' }}>
@@ -491,11 +566,28 @@ export default function Home() {
               const dayNum = daysBetweenInclusive(TRIP_START, day.date);
               const overPace = day.total > avgPerDayRemaining;
               const diff = Math.abs(day.total - avgPerDayRemaining);
+              const isToday = day.date === todayStr;
               return (
-                <div key={day.date} style={{ borderRadius: 12, background: 'var(--bg)', border: '1px solid var(--line)', padding: '10px 12px', animation: 'fadeInUp 0.3s ease' }}>
+                <div
+                  key={day.date}
+                  id={`day-${day.date}`}
+                  style={{
+                    borderRadius: 12, padding: '10px 12px', animation: 'fadeInUp 0.3s ease',
+                    background: isToday ? '#fff4ec' : 'var(--bg)',
+                    border: isToday ? '2px solid var(--sunset)' : '1px solid var(--line)',
+                  }}
+                >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
                     <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--sunset)' }}>
                       יום {dayNum} · {dayLabel(day.date)}
+                      {isToday && (
+                        <span style={{
+                          marginRight: 6, fontSize: 10.5, padding: '1px 8px', borderRadius: 20,
+                          background: 'var(--sunset)', color: '#fff', verticalAlign: 'middle',
+                        }}>
+                          היום
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 14, fontWeight: 800 }}>{fmt(day.total)} ₪</div>
                   </div>
