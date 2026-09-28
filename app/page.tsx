@@ -7,7 +7,7 @@ const TARGET_BUDGET = 40000;
 const CAP_BUDGET = 50000;
 
 const TRIP_START = '2026-09-09';
-const TRIP_END = '2026-09-30';
+const TRIP_END = '2026-09-29';
 
 const BASELINE = [
   { label: 'טיסות (הלוך ושוב, שני נוסעים)', amount: 13563 },
